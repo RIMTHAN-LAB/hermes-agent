@@ -995,6 +995,79 @@ class TestDeliveryParity:
         assert fired[0]["task_id"] == "t1"
         assert results == ["ok"]
 
+    def test_module_invoke_hook_waits_for_published_inflight_discovery(self, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+
+        published = threading.Event()
+        allow_registration = threading.Event()
+        joined = threading.Event()
+
+        def _register(manager):
+            published.set()
+            assert allow_registration.wait(5)
+            manager._hooks.setdefault("pre_llm_call", []).append(
+                lambda **kwargs: {"context": "first-turn-plugin-context"}
+            )
+
+        manager = self._fresh_manager(monkeypatch, _register)
+        monkeypatch.setattr(plugins_mod, "_background_discovery_thread", None)
+        monkeypatch.setattr(plugins_mod, "_persist_plugin_toolset_keys", lambda: None)
+        original_join = plugins_mod._join_background_discovery
+
+        def _join():
+            joined.set()
+            allow_registration.set()
+            original_join()
+
+        monkeypatch.setattr(plugins_mod, "_join_background_discovery", _join)
+        plugins_mod.start_background_plugin_discovery()
+        discovery = plugins_mod._background_discovery_thread
+        try:
+            assert published.wait(5)
+            assert manager._discovered is True
+            assert discovery.is_alive()
+            assert not manager._hooks.get("pre_llm_call")
+
+            results = plugins_mod.invoke_hook("pre_llm_call", platform="cron")
+
+            assert results == [{"context": "first-turn-plugin-context"}]
+            assert joined.is_set()
+        finally:
+            allow_registration.set()
+            discovery.join(5)
+            assert not discovery.is_alive()
+
+    @pytest.mark.parametrize("deadline_worker", [False, True])
+    def test_module_hook_delivery_reenters_background_loader(self, monkeypatch, deadline_worker):
+        import hermes_cli.plugins as plugins_mod
+        from hermes_cli.plugins_loader import run_with_load_deadline
+
+        results = []
+
+        def _register(manager):
+            manager._hooks.setdefault("pre_llm_call", []).append(
+                lambda **kwargs: {"context": "recursive-plugin-context"}
+            )
+
+            def _invoke():
+                results.append(plugins_mod.invoke_hook("pre_llm_call"))
+
+            if deadline_worker:
+                context = PluginContext(PluginManifest(name="recursive", source="user"), manager)
+                run_with_load_deadline("recursive", context, _invoke)
+            else:
+                _invoke()
+
+        self._fresh_manager(monkeypatch, _register)
+        monkeypatch.setattr(plugins_mod, "_background_discovery_thread", None)
+        monkeypatch.setattr(plugins_mod, "_persist_plugin_toolset_keys", lambda: None)
+        plugins_mod.start_background_plugin_discovery()
+        discovery = plugins_mod._background_discovery_thread
+        discovery.join(5)
+
+        assert not discovery.is_alive()
+        assert results == [[{"context": "recursive-plugin-context"}]]
+
     def test_module_invoke_middleware_lazily_discovers(self, monkeypatch):
         import hermes_cli.plugins as plugins_mod
 

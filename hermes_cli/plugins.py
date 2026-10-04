@@ -1922,8 +1922,8 @@ def _delivery_manager() -> PluginManager:
     on those surfaces (#50776, #67597, #67890, #50937; tracking #64178 — salvaged from PR #64188).
     """
     manager = get_plugin_manager()
+    _join_background_discovery()
     if not getattr(manager, "_discovered", True):
-        _join_background_discovery()
         manager.discover_and_load()
     return manager
 
