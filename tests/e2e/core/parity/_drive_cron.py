@@ -63,6 +63,7 @@ def drive_cron(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveResult:
         graceful_exit=True,  # both CLI invocations exited on their own (subprocess.run, no signal)
         extra={
             "job_id": job_id,
+            "stderr_tail": ran.stderr,
             "run_stdout": ran.stdout.strip()[-500:],
             "run_succeeded": "Ran now: succeeded." in ran.stdout,
             "output_file": str(outputs[-1]) if outputs else None,

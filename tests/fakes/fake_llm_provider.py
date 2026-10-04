@@ -89,6 +89,8 @@ class DropMidStream:
 
     text: str = "partial answer that never finishes"
     after_chars: int = 12
+    chunk_chars: int | None = None
+    delay_per_chunk: float = 0.0
 
 
 @dataclass
@@ -307,7 +309,12 @@ def _handler_for(server: FakeLLMServer) -> type[BaseHTTPRequestHandler]:
             if isinstance(resp, DropMidStream):
                 self._start_sse()
                 self._sse(_chunk({"role": "assistant", "content": ""}))
-                self._sse(_chunk({"content": resp.text[: resp.after_chars]}))
+                partial = resp.text[: resp.after_chars]
+                pieces = _pieces(partial, resp.chunk_chars) if resp.chunk_chars is not None else [partial]
+                for piece in pieces:
+                    if resp.delay_per_chunk and server._stop.wait(resp.delay_per_chunk):
+                        break
+                    self._sse(_chunk({"content": piece}))
                 self.wfile.flush()
                 self.close_connection = True
                 return

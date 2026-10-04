@@ -24,12 +24,15 @@ concurrency:
   group: windows-install-update-e2e-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORK_STANDARD_RUNNER: ${{ github.repository != 'NousResearch/hermes-agent' }}
+
 jobs:
   install-update:
     name: Windows install.ps1 + hermes update E2E
-    runs-on: windows-latest-32-core
+    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-core' || 'windows-2025' }}
     # A typical run is ~17 min; one slow runner took 28 min for the same work (run 36295230146).
-    timeout-minutes: 50
+    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && 50 || 120 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
@@ -49,6 +52,10 @@ jobs:
       - name: Run Windows install + update E2E
         shell: bash
         run: |
+          if [ "$FORK_STANDARD_RUNNER" = "true" ]; then
+            HERMES_TEST_WORKERS="$(python -c 'import os; print(max(1, min(2, os.cpu_count() or 1)))')"
+            export HERMES_TEST_WORKERS
+          fi
           scripts/run_tests.sh tests/e2e/core/windows_update/ -- \
             -m "platforms and integration" -v --tb=short -rA
         env:

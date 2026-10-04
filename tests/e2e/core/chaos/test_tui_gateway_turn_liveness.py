@@ -27,11 +27,13 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -87,6 +89,10 @@ pytestmark = [
 HEARTBEAT_MAX_S = 3.0
 HEARTBEAT_INTERVAL_S = 0.15
 MIN_HEARTBEATS = 5
+# Only the first drop reserves five near-bound RPCs plus their sampling intervals.
+# Frequent partial chunks prevent a stale-stream timeout; later drops stay immediate.
+DROP_SAMPLING_CHUNKS = math.ceil(
+    MIN_HEARTBEATS * (HEARTBEAT_MAX_S + HEARTBEAT_INTERVAL_S) / HEARTBEAT_INTERVAL_S)
 READY_TIMEOUT_S = 60.0
 SETTLE_TIMEOUT_S = 30.0
 EXIT_TIMEOUT_S = 30.0
@@ -154,14 +160,27 @@ FAULTS: dict[str, Callable[[list, str], Any]] = {
 }
 
 
-def responder(record: dict[str, Any]):
-    messages = record["body"].get("messages") or []
-    deciding = _deciding_user_text(messages)
-    if probe := _PROBE.search(deciding):
-        return Text(f"alive {probe['nonce']}")
-    if mark := _MARK.search(deciding):
-        return FAULTS[mark["fault"]](messages, mark["nonce"])
-    return Text("unscripted")
+def responder() -> Callable[[dict[str, Any]], Any]:
+    sampled_drops: set[str] = set()
+    lock = threading.Lock()
+
+    def respond(record: dict[str, Any]):
+        messages = record["body"].get("messages") or []
+        deciding = _deciding_user_text(messages)
+        if probe := _PROBE.search(deciding):
+            return Text(f"alive {probe['nonce']}")
+        if mark := _MARK.search(deciding):
+            if mark["fault"] == "drop":
+                with lock:
+                    first_drop = mark["nonce"] not in sampled_drops
+                    sampled_drops.add(mark["nonce"])
+                if first_drop:
+                    return DropMidStream(text="." * DROP_SAMPLING_CHUNKS, after_chars=DROP_SAMPLING_CHUNKS,
+                                         chunk_chars=1, delay_per_chunk=HEARTBEAT_INTERVAL_S)
+            return FAULTS[mark["fault"]](messages, mark["nonce"])
+        return Text("unscripted")
+
+    return respond
 
 
 def _main_requests_for(srv: FakeLLMServer, needle: str) -> list[dict[str, Any]]:
@@ -443,7 +462,7 @@ def scenario_futures(request: pytest.FixtureRequest, tmp_path_factory: pytest.Te
         item.callspec.params["scn"].id for item in request.session.items
         if isinstance(getattr(getattr(item, "callspec", None), "params", {}).get("scn"), Scenario)
     }
-    with FakeLLMServer(responder) as srv, ThreadPoolExecutor(
+    with FakeLLMServer(responder()) as srv, ThreadPoolExecutor(
             max_workers=max(1, len(selected)), thread_name_prefix="chaos-tui") as pool:
         futures: dict[str, Future] = {
             scn.id: pool.submit(run_scenario, scn, srv, tmp_path_factory.mktemp(scn.id))
