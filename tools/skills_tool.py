@@ -23,7 +23,7 @@ from tools.skills_tool_setup import (  # noqa: F401
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
 from tools.skills_tool_plugin import (  # noqa: F401
     MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, _INJECTION_PATTERNS, _fail, _json,
-    _mark_background_review_read, _preprocess_skill, _read_skill_text, _safe_frontmatter,
+    _mark_background_review_read, _preprocess_skill, _read_skill_bytes, _read_skill_text, _safe_frontmatter,
     _serve_plugin_skill, _serve_skill_file, _truncate_description)
 from tools.skills_tool_dedup import (  # noqa: F401
     _check_skill_view_dedup, _record_skill_view, reset_skill_view_dedup)
@@ -128,8 +128,9 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     (respects test monkeypatching), then skills.external_dirs."""
     dirs_to_check = [_skills_dir()]
     with suppress(Exception):
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_plugin_skills_dirs
         dirs_to_check.extend(get_external_skills_dirs())
+        dirs_to_check.extend(get_plugin_skills_dirs())
     for skills_dir in dirs_to_check:
         with suppress(ValueError):
             if len(parts := skill_path.relative_to(skills_dir).parts) >= 3:
@@ -173,11 +174,12 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
 def _skill_search_dirs() -> Tuple[list, list, Path]:
     """(project_dirs, all_dirs, active_skills_dir); trusted project-local dirs come FIRST so
     first-wins dedup / the collision resolver prefer them."""
-    from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
+    from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs, get_plugin_skills_dirs
     project_dirs = list(get_project_skills_dirs())
     active_skills_dir = _skills_dir()
     all_dirs = project_dirs + ([active_skills_dir] if active_skills_dir.exists() else [])
     all_dirs += get_external_skills_dirs()
+    all_dirs += [d for d in get_plugin_skills_dirs() if d not in all_dirs]
     return project_dirs, all_dirs, active_skills_dir
 
 
@@ -203,7 +205,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
             try:
-                frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md)[:4000])
+                frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md, metadata_only=True))
                 if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
                     continue
                 name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
@@ -495,8 +497,8 @@ def _provably_same_skill(candidates) -> bool:
     try:
         if len({os.path.realpath(smd) for _sd, smd in candidates}) == 1:
             return True
-        return len({hashlib.sha256(smd.read_bytes()).hexdigest() for _sd, smd in candidates}) == 1
-    except OSError:
+        return len({hashlib.sha256(_read_skill_bytes(smd)).hexdigest() for _sd, smd in candidates}) == 1
+    except (OSError, ValueError):
         return False
 
 
@@ -512,6 +514,10 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
         # A project skill intentionally overrides a same-named local/external skill;
         # ambiguity WITHIN the project tier (two different skills) still refuses.
         candidates = [c for c in candidates if _under_any(c[1], project_dirs)] or candidates
+    if len(candidates) > 1:
+        from agent.skill_utils import get_plugin_skills_dirs
+        plugin_dirs = get_plugin_skills_dirs()
+        candidates = [c for c in candidates if not _under_any(c[1], plugin_dirs)] or candidates
     if len(candidates) > 1:
         # The refusal below guards against one skill silently shadowing another. Copies of ONE
         # skill inside a single search dir (``<root>/x`` symlink view + ``<root>/cat/x`` copy)

@@ -136,6 +136,13 @@ class SessionState:
     agent: Any  # AIAgent instance
     cwd: str = "."
     model: str = ""
+    configuration_generation: int | None = None
+    configuration_bound_in_instance: bool = False
+    prompt_started_in_instance: bool = False
+    configuration_base_prompt: str | None = None
+    client_instructions: str | None = None
+    native_instructions: str | None = None
+    acp_mcp_configs: Dict[str, dict] = field(default_factory=dict)
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
@@ -320,14 +327,16 @@ class SessionManager:
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
-        for key in ("provider", "base_url", "api_mode"):
+        if state.configuration_generation is not None:
+            session_meta["acp_configuration"] = {"generation": state.configuration_generation, "instructions": state.client_instructions, "nativeInstructions": state.native_instructions}
+        for key in ("provider", "requested_provider", "base_url", "api_mode"):
             value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
 
         try:
             if db.get_session(state.session_id) is None:
-                if not state.history:
+                if not state.history and state.configuration_generation is None:
                     # Empty editor probes stay ephemeral; copied fork history persists.
                     return
                 db.create_session(session_id=state.session_id, source="acp", model=model_str,
@@ -442,13 +451,24 @@ class SessionManager:
         try:
             agent = self._make_agent(
                 session_id=session_id, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
-                requested_provider=meta.get("provider") or row.get("billing_provider"),
+                requested_provider=meta.get("requested_provider") or meta.get("provider") or row.get("billing_provider"),
                 base_url=meta.get("base_url") or row.get("billing_base_url"))
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
                                     history, persist=False)
+        configuration = meta.get("acp_configuration")
+        if isinstance(configuration, dict):
+            generation, instructions = configuration.get("generation"), configuration.get("instructions")
+            if type(generation) is int and generation >= 0 and isinstance(instructions, str):
+                state.configuration_generation = generation
+                state.client_instructions = instructions
+                native_instructions = configuration.get("nativeInstructions")
+                state.native_instructions = native_instructions if isinstance(native_instructions, str) else None
+                prior = getattr(agent, "ephemeral_system_prompt", None)
+                state.configuration_base_prompt = prior
+                agent.ephemeral_system_prompt = "\n\n".join(part for part in [prior, instructions, state.native_instructions] if isinstance(part, str) and part)
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 
@@ -500,9 +520,9 @@ class SessionManager:
         resolve_error: Exception | None = None
         try:
             runtime = resolve_runtime_provider(
-                requested=requested_provider or config_provider, target_model=(model or default_model) or None)
+                requested=requested_provider or config_provider, explicit_base_url=base_url, target_model=(model or default_model) or None)
             kwargs.update({
-                "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
+                "provider": runtime.get("provider"), "requested_provider": requested_provider or config_provider or runtime.get("requested_provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
                 "credential_pool": runtime.get("credential_pool"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),

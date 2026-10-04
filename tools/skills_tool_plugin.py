@@ -30,10 +30,19 @@ def _fail(error: str, **extra) -> str:
     return _json({"success": False, "error": error, **extra})
 
 
-def _read_skill_text(path: Path) -> str:
-    """utf-8-sig + errors="replace": user-authored SKILL.md may carry a Notepad BOM or stray
-    bytes; pinning UTF-8 keeps skill_view deterministic across host locales."""
-    return path.read_text(encoding="utf-8-sig", errors="replace")
+def _read_skill_bytes(path: Path, *, metadata_only: bool = False) -> bytes:
+    limit = 16003 if metadata_only else 10 * 1024 * 1024
+    with path.open("rb") as stream:
+        content = stream.read(limit if metadata_only else limit + 1)
+    if not metadata_only and len(content) > limit:
+        raise ValueError("Skill text exceeds the byte limit")
+    return content
+
+
+def _read_skill_text(path: Path, *, metadata_only: bool = False) -> str:
+    """Bounded UTF-8 skill content, preserving the existing BOM and replacement behavior."""
+    text = _read_skill_bytes(path, metadata_only=metadata_only).decode("utf-8-sig", errors="replace")
+    return text[:4000] if metadata_only else text
 
 
 def _truncate_description(description: str) -> str:
