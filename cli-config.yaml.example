@@ -1134,6 +1134,10 @@ skills:
   # external_dirs:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
+  # Managed read-only package roots, relative to HERMES_HOME or absolute.
+  # Project and native user/external skills take priority over these plugin roots.
+  # plugin_dirs:
+  #   - .factory-managed/skills/example-package
 
 # =============================================================================
 # Agent Behavior

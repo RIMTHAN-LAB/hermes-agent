@@ -11,6 +11,9 @@ concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORK_STANDARD_RUNNER: ${{ github.repository != 'NousResearch/hermes-agent' }}
+
 jobs:
   test:
     name: Run tests
@@ -21,8 +24,8 @@ jobs:
     # 96 cores clear the floor that the slowest single test file sets (about
     # 82s). A second slice divides work that is already at that floor, and
     # adds a second setup.
-    runs-on: ubuntu-latest-96-core
-    timeout-minutes: 30
+    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-96-core' || 'ubuntu-24.04' }}
+    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && 30 || 210 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -129,6 +132,10 @@ jobs:
         # set is identical to the list the removed matrix job used to pass in.
         run: |
           source .venv/bin/activate
+          if [ "$FORK_STANDARD_RUNNER" = "true" ]; then
+            HERMES_TEST_WORKERS="$(python -c 'import os; print(max(1, min(4, os.cpu_count() or 1)))')"
+            export HERMES_TEST_WORKERS
+          fi
           scripts/run_tests.sh
         env:
           # This is the maximum number of test FILES that run together.
@@ -169,8 +176,8 @@ jobs:
   e2e:
     # The core suites spawn real serve / gateway / tui_gateway / MCP / SQLite
     # writer processes per test; a 4-vCPU runner serialises them into timeouts.
-    runs-on: ubuntu-latest-32-core
-    timeout-minutes: 30
+    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-32-core' || 'ubuntu-24.04' }}
+    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && 30 || 120 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -263,6 +270,10 @@ jobs:
         # tests/e2e/core/upgrade runs in its own job (e2e-upgrade) below.
         run: |
           source .venv/bin/activate
+          if [ "$FORK_STANDARD_RUNNER" = "true" ]; then
+            HERMES_TEST_WORKERS="$(python -c 'import os; print(max(1, min(4, os.cpu_count() or 1)))')"
+            export HERMES_TEST_WORKERS
+          fi
           mapfile -t files < <(find tests/e2e -name 'test_*.py' -not -path 'tests/e2e/core/upgrade/*' | sort)
           scripts/run_tests.sh --include-integration "${files[@]}"
         env:
@@ -284,8 +295,8 @@ jobs:
     # autostash, killed mid-pull / mid-deps, offline), fresh-process import and
     # entrypoint smoke, and the config round-trip property matrix. Its own job:
     # it needs full history + tags, bubblewrap, and one file runs ~5-15 min.
-    runs-on: ubuntu-latest-32-core
-    timeout-minutes: 60
+    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-32-core' || 'ubuntu-24.04' }}
+    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && 60 || 180 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -375,6 +386,10 @@ jobs:
       - name: Run upgrade e2e tests
         run: |
           source .venv/bin/activate
+          if [ "$FORK_STANDARD_RUNNER" = "true" ]; then
+            HERMES_TEST_WORKERS="$(python -c 'import os; print(max(1, min(4, os.cpu_count() or 1)))')"
+            export HERMES_TEST_WORKERS
+          fi
           scripts/run_tests.sh --include-integration tests/e2e/core/upgrade
         env:
           HERMES_TEST_FILE_TIMEOUT: "3000"

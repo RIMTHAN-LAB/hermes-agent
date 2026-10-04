@@ -6,6 +6,8 @@ helpers) is read through ``_core`` so ``mock.patch("tools.mcp_tool.X")`` keeps w
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import time
 from contextlib import contextmanager
@@ -725,6 +727,27 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
             entry["tools"] = lazy_tools[name]
         result.append(entry)
     return result
+
+
+def get_mcp_configuration_observations(configured: Dict[str, dict]) -> List[dict]:
+    """Existing client handshake and full tools-list state, without credentials or server errors."""
+    observations = []
+    for status in get_mcp_status(configured):
+        observation = {key: status[key] for key in ("name", "transport", "status")}
+        observation["toolNames"] = []
+        with _core._lock:
+            key = _resolve_server_key(status["name"])
+            server = _core._servers.get(key) if key is not None else None
+            ready = server is not None and server.session is not None and server.initialize_result is not None and server._ready.is_set()
+            if ready:
+                schemas = [tool.model_dump(mode="json", by_alias=True, exclude_none=True) for tool in server._tools]
+                observation["toolNames"] = sorted(tool.name for tool in server._tools)
+                payload = json.dumps(sorted(schemas, key=lambda tool: tool["name"]), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+                observation["schemaDigest"] = hashlib.sha256(payload).hexdigest()
+            elif observation["status"] == "connected":
+                observation["status"] = "connecting"
+        observations.append(observation)
+    return sorted(observations, key=lambda observation: observation["name"])
 
 
 def mcp_server_reconnecting(name: str) -> bool:

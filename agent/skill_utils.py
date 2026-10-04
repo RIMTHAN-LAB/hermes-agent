@@ -385,6 +385,18 @@ def get_external_skills_dirs() -> List[Path]:
     return result
 
 
+
+def get_plugin_skills_dirs() -> List[Path]:
+    """Configured immutable package roots, below project and user skills."""
+    result: List[Path] = []
+    local = get_skills_dir().resolve()
+    for entry in _config_str_list(_skills_cfg_get("plugin_dirs")):
+        candidate = _home_relative(_expand_path(entry)).resolve()
+        if candidate != local and candidate.is_dir() and candidate not in result:
+            result.append(candidate)
+    return result
+
+
 def get_skill_create_dir() -> Optional[Path]:
     """Configured ``skills.create_dir`` (need not exist yet), or None when unset;
     relative to HERMES_HOME; a value equal to the local skills dir counts as unset."""
@@ -425,6 +437,7 @@ def get_all_skills_dirs() -> List[Path]:
     if create_dir is not None and create_dir.is_dir():
         dirs.append(create_dir)
     dirs.extend(d for d in get_external_skills_dirs() if d not in dirs)
+    dirs.extend(d for d in get_plugin_skills_dirs() if d not in dirs)
     return dirs
 
 
@@ -605,7 +618,7 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     except Exception:
         primary_root = get_skills_dir()
     trusted_roots = [primary_root]
-    for getter in (get_project_skills_dirs, get_external_skills_dirs):
+    for getter in (get_project_skills_dirs, get_external_skills_dirs, get_plugin_skills_dirs):
         try:
             trusted_roots.extend(getter())
         except Exception:
@@ -637,7 +650,7 @@ def is_external_skill_path(path) -> bool:
     Those are externally owned: autonomous lifecycle maintenance treats them as
     read-only (user-directed tool calls may still edit them)."""
     candidate = _resolve_for_skill_ownership(path)
-    roots: List[Path] = list(get_external_skills_dirs())
+    roots: List[Path] = list(get_external_skills_dirs()) + list(get_plugin_skills_dirs())
     try:
         roots.extend(get_project_skills_dirs())
     except Exception:

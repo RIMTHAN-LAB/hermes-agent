@@ -18,7 +18,7 @@ import acp
 from acp.schema import (
     AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, ForkSessionResponse,
     Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpServerHttp, McpServerSse,
-    McpServerStdio, ModelInfo, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
+    McpServerStdio, McpCapabilities, ModelInfo, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
     SessionCapabilities, SessionForkCapabilities, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
     SessionMode, SessionModeState, SessionModelState, SessionResumeCapabilities, SetSessionConfigOptionResponse,
     SetSessionModeResponse, SetSessionModelResponse, TextContentBlock, Usage, UsageUpdate, UserMessageChunk,
@@ -170,7 +170,7 @@ def _history_replay_updates(history: list[dict[str, Any]]):
 def _mcp_server_config(server: McpServerStdio | McpServerHttp | McpServerSse) -> dict:
     if isinstance(server, McpServerStdio):
         return {"command": server.command, "args": list(server.args), "env": {i.name: i.value for i in server.env}}
-    return {"url": server.url, "headers": {i.name: i.value for i in server.headers}}
+    return {"url": server.url, "headers": {i.name: i.value for i in server.headers}, "transport": "sse" if isinstance(server, McpServerSse) else "http"}
 
 
 def _restore_env(key: str, value: str | None) -> None:
@@ -354,6 +354,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         )
         # Assign only after the rebuild succeeded so a failed switch leaves the session on its
         # working model instead of a model/agent mismatch that persists via save_session.
+        from acp_adapter.configuration import bind_agent_instructions
+        bind_agent_instructions(state, agent)
         state.agent, state.model = agent, new_model
         self.session_manager.save_session(state.session_id)
         return current_provider, target_provider, new_model
@@ -430,6 +432,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             from tools.mcp_tool_discovery import register_mcp_servers
 
             configs = {s.name: _mcp_server_config(s) for s in mcp_servers}
+            state.acp_mcp_configs = configs
 
             def _register_pinned() -> None:
                 # new_session/load_session run outside the per-turn cwd pin; the session's logical cwd is
@@ -518,6 +521,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         threading.Thread(target=_wait_then_refresh, name=f"acp-mcp-late-refresh-{session_id}", daemon=True).start()
 
+    async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        from acp_adapter.configuration import configure_session, read_session_configuration
+        handlers = {"hermes/session/configure": configure_session, "hermes/session/configuration": read_session_configuration}
+        handler = handlers.get(method)
+        if handler is None:
+            from acp.exceptions import RequestError
+            raise RequestError.method_not_found(method)
+        return await asyncio.to_thread(handler, self.session_manager, params)
+
     # ---- ACP lifecycle ------------------------------------------------------
 
     async def initialize(
@@ -535,12 +547,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             agent_info=Implementation(name="hermes-agent", version=HERMES_VERSION),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
+                mcp_capabilities=McpCapabilities(http=True, sse=True),
                 prompt_capabilities=PromptCapabilities(image=True),
                 session_capabilities=SessionCapabilities(
                     fork=SessionForkCapabilities(), list=SessionListCapabilities(), resume=SessionResumeCapabilities(),
                 ),
             ),
             auth_methods=auth_methods,
+            field_meta={"hermes": {"configurationReadback": 1}},
         )
 
     async def authenticate(self, method_id: str, **kwargs: Any) -> AuthenticateResponse | None:
@@ -730,6 +744,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         with state.runtime_lock:
             if not state.is_running and not state.command_op:
                 state.is_running = True
+                state.prompt_started_in_instance = True
                 state.current_prompt_text = user_text or "[Image attachment]"
                 return None
             # Redirect steers a live turn; a state-mutating command (command_op) has none.
