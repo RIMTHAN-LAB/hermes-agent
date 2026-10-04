@@ -53,7 +53,7 @@ jobs:
         shell: bash
         run: |
           if [ "$FORK_STANDARD_RUNNER" = "true" ]; then
-            HERMES_TEST_WORKERS="$(python -c 'import os; print(max(1, min(4, os.cpu_count() or 1)))')"
+            HERMES_TEST_WORKERS="$(python -c 'import os; print(max(1, min(2, os.cpu_count() or 1)))')"
             export HERMES_TEST_WORKERS
           fi
           scripts/run_tests.sh tests/e2e/core/windows_update/ -- \
