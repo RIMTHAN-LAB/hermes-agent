@@ -48,8 +48,10 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
     def transcript() -> str:
         return tmux("capture-pane", "-p", "-J", "-t", "p", "-S", "-", "-E", "-")
 
-    def wait_for(needle: str, timeout: float = 60.0) -> None:
+    def wait_for(needle: str, timeout: float = 60.0, *, deadline: float | None = None) -> None:
         end = time.monotonic() + timeout
+        if deadline is not None:
+            end = min(end, deadline)
         while needle not in transcript():
             assert time.monotonic() < end, f"{needle!r} never appeared:\n{transcript()[-3000:]}"
             time.sleep(0.1)
@@ -57,13 +59,18 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
     def resize(cols: int) -> None:
         tmux("resize-window", "-t", "p", "-x", str(cols), "-y", "24")
 
+    reply_deadlines: dict[int, float] = {}
+
     def ask(turn: int) -> None:
-        tmux("send-keys", "-t", "p", "-l", f"question zq{turn}q please")
+        reply_deadlines[turn] = time.monotonic() + 60.0
+        question = f"question zq{turn}q please"
+        tmux("send-keys", "-t", "p", "-l", question)
+        wait_for(f"❯ {question}", deadline=reply_deadlines[turn])
         time.sleep(0.5)  # typed text + Enter in one write is a paste, not a submit
         tmux("send-keys", "-t", "p", "Enter")
 
     def reply_done(turn: int) -> None:
-        wait_for(f"t{turn}w{WORDS[turn] - 1:03d}")
+        wait_for(f"t{turn}w{WORDS[turn] - 1:03d}", deadline=reply_deadlines[turn])
         time.sleep(2.0)
 
     script = [Text(_reply(t), chunk_chars=10, delay_per_chunk=0.03) for t in WORDS]
@@ -77,13 +84,15 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
                         "-y", "24", "-c", str(tmp_path / "work"), *argv], env=env, check=True, timeout=30)
         try:
             tmux("set", "-g", "window-size", "manual")
-            wait_for("Welcome to Hermes", timeout=120)
+            boot_deadline = time.monotonic() + 120.0
+            wait_for("Welcome to Hermes", timeout=120, deadline=boot_deadline)
+            wait_for("❯", timeout=120, deadline=boot_deadline)
             time.sleep(2.0)
 
             ask(1)
             reply_done(1)
             ask(2)
-            wait_for("t2w040")
+            wait_for("t2w040", deadline=reply_deadlines[2])
             for cols in (110, 95, 80, 70, 90, 85, 100):  # a drag: 7 resizes in 0.35 s
                 resize(cols)
                 time.sleep(0.05)
@@ -91,7 +100,7 @@ def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Pat
             resize(80)  # idle shrink
             time.sleep(1.5)
             ask(3)
-            wait_for("t3w020")  # the end of the first line: its commit repaints the chrome
+            wait_for("t3w020", deadline=reply_deadlines[3])  # the end of the first line: its commit repaints the chrome
             resize(70)  # two-step shrink mid-stream
             time.sleep(0.8)
             resize(60)
