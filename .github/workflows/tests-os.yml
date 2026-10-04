@@ -63,11 +63,14 @@ concurrency:
   group: tests-os-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
+env:
+  FORK_STANDARD_RUNNER: ${{ github.repository != 'NousResearch/hermes-agent' }}
+
 jobs:
   os-tests:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.timeout || 30 }}
+    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && (matrix.timeout || 30) || 90 }}
     strategy:
       fail-fast: false
       matrix:
@@ -83,10 +86,10 @@ jobs:
             marker: macos
             slice: 2/2
           - name: Windows-only tests
-            runner: windows-latest-32-core
+            runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-core' || 'windows-2025' }}
             marker: windows
           - name: Windows-only tests (arm64)
-            runner: windows-latest-32-arm-core
+            runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-arm-core' || 'windows-11-arm' }}
             marker: windows
             timeout: 60
     steps:
@@ -174,6 +177,10 @@ jobs:
           # ``-m`` — "must never pass without running its OS's tests").
           SEPARATOR="$(python -c 'import os, sys; sys.stdout.write(os.pathsep)')"
           FILES="$(tr -d '\r' < "$LIST" | paste -sd "$SEPARATOR" -)"
+          if [ "$FORK_STANDARD_RUNNER" = "true" ] && [ "${{ matrix.marker }}" = "windows" ]; then
+            HERMES_TEST_WORKERS="$(python -c 'import os; print(max(1, min(4, os.cpu_count() or 1)))')"
+            export HERMES_TEST_WORKERS
+          fi
           scripts/run_tests.sh --files "$FILES" -- \
             ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
             -m "platforms and not integration" \
@@ -216,8 +223,8 @@ jobs:
     # 32-core like os-tests' Windows row: seven files run in parallel and each spawns
     # process trees; on the 4-vCPU image the suite step took 153-171 s (job 4.7-5.6 min),
     # here 124 s (job 3.1 min), with headroom against scheduling-starved timeouts.
-    runs-on: windows-latest-32-core
-    timeout-minutes: 25
+    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-core' || 'windows-2025' }}
+    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && 25 || 90 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
@@ -233,6 +240,10 @@ jobs:
       - name: Run Windows E2E suite
         shell: bash
         run: |
+          if [ "$FORK_STANDARD_RUNNER" = "true" ]; then
+            HERMES_TEST_WORKERS="$(python -c 'import os; print(max(1, min(4, os.cpu_count() or 1)))')"
+            export HERMES_TEST_WORKERS
+          fi
           scripts/run_tests.sh tests/e2e/core/windows/ -- \
             -m "platforms and integration" -v --tb=short -rA
         env:
